@@ -1,0 +1,307 @@
+---
+title: "What population does the odds ratio from my logistic regression represent?"
+author: "Frank Popham"
+date: "28/04/2020"
+output:
+  pdf_document: default
+  html_document: default
+bibliography: notpop.bib
+---
+
+```{r setup, echo = FALSE, warning = FALSE, message=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message=FALSE, eval=TRUE)
+
+library("tidyverse")
+library("broom")
+library("knitr")
+library("margins")
+library("kableExtra")
+library("ggthemes")
+
+
+
+```
+Working paper version 1, comments welcome (frank.popham at protonmail.com)
+
+### Introduction
+
+Directly adjusting for confounders (C) using a regression model to estimate the effect of an exposure (X) on an outcome (Y) remains very popular in observational epidemiology (@Hernan). There are alternative adjustment methods. For example, inverse probability weighting (IPW). IPW is a two stage process. Stage one, model X as a function of C. Stage two, model Y as a function of X weighted by the IPW from stage one where the IPW is the inverse of the probability of X. There are a number of notable advantages of IPW over an outcome regression, including controlling for confounding without the need to see outcome based results (this could limit positive result bias). Another advantage is that after stage one, the IPW can be used to assess confounder balance over exposure and to assess the average value  that confounders are balanced at. The value confounders are balanced at is the population that your second stage estimate will represent. An outcome regression will balance confounders in the model over exposure but it is not clear the population it represents. Given effect modification by confounders, the magnitude and even direction of effect may matter. Say a drug has a positive treatment effect for women but a negative effect for men then the population effect is going to depend on the sex distribution.  
+
+Recent work shows how to derive the population for the effect of an outcome linear regression  [@Aronow2016; @Popham2018]. Loosely, both methods show that an outcome linear regression is also two stage in that the population it represents can be derived without reference to the outcome. However it appears both methods are only approximate for other generalized linear regressions including logistic regression. In this working paper I empirically derive the population for a logistic regression but so far have not derived it algebraically. Ideas how to do so are welcome. Importantly when I refer to an outcome regression I exclude models with an interaction between X and C when modelling Y. Why? Well, normally researchers read their main effect directly from regressions output. Including X and C interaction would preclude this. So I recognize the model might be wrong. In fact checking balance can identify that the model may be sub optimal. 
+
+\newpage
+
+### Methods and Results
+
+The method of Aronow and Samii calculates the population of an outcome regression  from the residual (R) of a regression of X as a  function of C (@Aronow2016). Table 1 displays for X and C, the count, the count of C and the probability of X given C and the resulting residual. [The dataset is open access](https://www.ons.gov.uk/peoplepopulationandcommunity/educationandchildcare/datasets/2011censusteachingfile) and included with the analysis code in the project directory of this working paper. All variables are binary. Using the  residual as a weight, we find the average of C over X. So for both values of X, C==1 is balanced at 46%.
+
+
+```{r}
+df <- read.csv("2011 Census Microdata Teaching File.csv", skip = 1)
+
+#Data management
+
+df2 <-as_tibble(df) %>% 
+  select("C"= Age,"Y"=Health,"X"=Economic.Activity) %>% 
+  filter_all(all_vars(.!=-9)) %>%
+  filter(C >=3 & C <=6) %>%
+  mutate(C=C-3) %>%
+  filter(C<=1) %>%
+  filter(X<=3) %>%
+  mutate(X=X==3) %>%
+  mutate(Y=Y>=2) %>%
+  mutate_all(~as.numeric(.))
+  remove(df)
+```
+
+
+
+```{r Table 1}
+#Table 1
+  
+Table1 <- df2 %>%
+  group_by(C, X) %>%
+  summarise(N=n()) %>%
+  group_by(C) %>%
+  mutate(N_C = sum(N)) %>%
+  mutate(X_C = N[2] / N_C) %>%
+  mutate(R_X_C = X-X_C) %>%
+  group_by(X) %>%
+  mutate(C_R=(N*R_X_C) / sum(N*R_X_C)) %>%
+  ungroup()
+
+model1 <- glm(X~C, family=binomial(), data=df2)
+
+
+Table1k <-kable(Table1, "latex", booktabs=TRUE, caption=
+                  "Exposure and confounder relationship") %>%
+  kable_styling(full_width = TRUE) %>%
+  footnote(general= c("N=count",
+                      "N_C=count of C",
+                      "X_C=probability of X given C",
+                      "R_X_C=residual of X_C",
+                      "C_R = C weighted by R_X_C"))
+
+
+model1 <- glm(X~C, family=binomial(), data=df2)
+
+Table1k
+```
+
+
+Table 2 displays the odds of Y by X and C as well as the value of the residual from Table 1. Table 3 displays the weighted odds by residual for X given C and the odds ratio (OR). This is very close but not quite the same as the OR from an outcome logistic regression (Y~X+C). This illustrates that the residual method is approximate for a logistic regression.
+
+
+```{r Table 2, eval=TRUE}
+#Table2
+
+Table2 <- df2 %>%
+  group_by(C, X) %>%
+  summarise(meanY=mean(Y)) %>%
+  mutate(oddsY=(meanY/(1-meanY))) %>%
+  ungroup() %>%
+  select(-meanY) %>%
+  bind_cols(C_R=Table1$C_R) 
+
+#Table 3
+
+Table3 <- Table2 %>%
+ group_by(X) %>%
+ summarise(oddsY=exp(sum(log(oddsY)*C_R))) %>%
+ ungroup() %>%
+ add_row()
+Table3$X[3] <- "OR"
+Table3$oddsY[3] <-  (Table3$oddsY[2]/Table3$oddsY[1])   
+  
+model3 <- glm(Y~X+C, data=df2, family=binomial)
+Table3 <- Table3 %>%
+  add_row(X="Model OR", oddsY=exp((model3$coefficients[2])))
+
+Table2k <-kable(Table2, "latex", booktabs=TRUE, caption=
+                  "Outcome odds by exposure and confounder") %>%
+  kable_styling(full_width = TRUE, latex_options = "hold_position") %>%
+  footnote(general= c("oddsY= odds of the outcome",
+                      "C_R = C weighted by residual of X given C"))
+
+Table3k <-kable(Table3, "latex", booktabs=TRUE, caption=
+                  "Outcome odds and odds ratio by exposure weighted by residual") %>%
+  kable_styling(full_width = FALSE, latex_options = "hold_position") %>%
+  footnote(general= c("oddsY = odds of the outcome",
+                      "OR = Odds ratio from residual weighting",
+                      "Model OR = Odds ratio from logistic regression (Y~X+C)"))
+
+Table2k
+
+Table3k
+
+```
+
+So what is the exact answer? Given the odds ratio from the outcome logistic regression and the confounder strata specific odds ratios for X on Y (Table 4), we can use the equation.
+          log(OR Y ~ X | C==0) - log(OR Y~X+C) / log(OR Y ~ X | C==0) - log(OR Y ~ X | C==1)
+
+As in Table 4 this suggests that the outcome logistic regression is balancing at 44% for C==1. Applying this new distribution of C to Table 2 gives the results in Table 5 and confirms this is the population the outcome logistic regression represents as the OR is the same as the model's OR.
+
+
+```{r Table4, eval=TRUE}
+#Table 4
+
+model4 <- glm(Y~X+C, data=df2)
+
+Table4 <- Table2 %>%
+  group_by(C) %>%
+  summarise(ORY_C=(oddsY[2]/oddsY[1])) %>%
+  ungroup() %>%
+  mutate(Cmean_ORY_C=(log(ORY_C[1])-model3$coefficients[2]) /
+           (log(ORY_C[1])-log(ORY_C[2]))) %>%
+  mutate(Cmean_ORY_C=case_when(C==0 ~ 1-Cmean_ORY_C,
+                               C==1 ~ 1*Cmean_ORY_C)) 
+  
+
+#Table 5 
+
+Table5 <- Table2 %>%
+ right_join(Table4, by =("C")) %>%
+ group_by(X) %>%
+ summarise(oddsY=exp(sum(log(oddsY)*Cmean_ORY_C))) %>%
+ ungroup() %>%
+ add_row() 
+ Table5$X[3] <- "OR"
+ Table5$oddsY[3] <-  (Table5$oddsY[2]/Table5$oddsY[1])
+ Table5 <- Table5 %>%
+  add_row(X="Model OR", oddsY=exp((model3$coefficients[2])))
+ 
+ Table4k <-kable(Table4, "latex", booktabs=TRUE, caption=
+                  "Strata specific odds ratios of the outcome and exact value of C for Y~X+C") %>%
+  kable_styling(full_width = FALSE, latex_options = "hold_position") %>%
+  footnote(general= c("ORY_C = Odds ratio Y ~ X for each strata of C ",
+                      "Cmean_ORY_C= Mean of C for outcome logistic regression"))
+ 
+ Table5k <-kable(Table5, "latex", booktabs=TRUE, caption=
+                  "Outcome odds and odds ratio by exposure weighted by Table 4 weight") %>%
+  kable_styling(full_width = FALSE, latex_options = "hold_position") %>%
+  footnote(general= c("oddsY = odds of the outcome",
+                      "OR = Odds ratio from Table 4  weighting",
+                      "Model OR = Odds ratio from logistic regression (Y~X+C)"))
+ 
+  Table4k
+  
+  Table5k
+ 
+ 
+```
+
+
+Table 6 reproduces Table 1 and adds the working residual. Th working residual is a normal residual divided by  probability * (1-probability). So in Table 6 we calculate this as (X- X|C)/ (X|C * (1-X|C)). The working residual simplifies for X==1 to 1 / X | C and for X==0 to -1 / (1- X|C), in other words the (negative of) IPW. Concisely put the normal residual is additive while the working residual is multiplicative. If we work out the weighted odds of Y by X given C using the working residual we obtain the results in Table 7. 
+
+```{r Table 6, eval=TRUE}
+#Table 6
+ 
+Table6  <- Table1 %>%
+  select(-C_R) %>%
+  mutate(WR_X_C=R_X_C/(X_C*(1-X_C))) %>%
+  group_by(X) %>%
+  mutate(C_WR=(N*WR_X_C) / sum(N*WR_X_C)) %>%
+  ungroup()
+  
+#Table7
+
+Table7 <- Table2 %>%
+ mutate(C_WR=Table6$C_WR) %>%
+ group_by(X) %>%
+ summarise(oddsY=exp(sum(log(oddsY)*C_WR))) %>%
+ ungroup() %>%
+ add_row()
+Table7$X[3] <- "OR"
+Table7$oddsY[3] <-  (Table7$oddsY[2]/Table7$oddsY[1]) 
+
+
+Table6k <-kable(Table6, "latex", booktabs=TRUE, caption=
+                  "Exposure and confounder combinations with working residual") %>%
+  kable_styling(full_width = TRUE, latex_options = "hold_position") %>%
+    footnote(general= c("N=count",
+                      "N_C=count of C",
+                      "X_C=probability of X given C",
+                      "R_X_C=residual of X_C",
+                      "WR_X_C=working residual of X_C",
+                      "C_WR = C weighted by WR_X_C"))
+
+Table7k <-kable(Table7, "latex", booktabs=TRUE, caption=
+                  "Outcome odds and odds ratio by exposure weighted by working residual") %>%
+  kable_styling(full_width = FALSE, latex_options = "hold_position") %>%
+  footnote(general= c("oddsY = odds of the outcome",
+                      "OR = Odds ratio from working residual weighting",
+                      "Model OR = Odds ratio from logistic regression (Y~X+C)"))
+
+df2 <- df2 %>%
+  group_by(C, X) %>%
+  mutate(oddsY=log(mean(Y)/(1-mean(Y)))) %>%
+  ungroup()
+
+Model5 <- glm(oddsY ~ X, data=df2, weights = abs(model1$residuals))
+Model6 <- glm(Y ~ X, data=df2, weights = abs(model1$residuals), family=binomial)
+
+
+Table6k
+
+Table7k
+
+```
+
+We would expect to obtain the same result from a logistic regression model of Y ~ X with the working residual as a weight but we don't quite (`r paste(exp(Model6$coefficients[2]))`). This is because  the IPW is a marginal model (unless you add a control variable) and in logistic regression results of models often differ whether they are conditional or marginal. 
+Another way of thinking about the difference between marginal and conditional results is as follows. Say we model using logistic regression Y~ X * C, in other words we include an interaction between X and C. From the results we can predict the odds of Y or the probability of Y. To obtain an odds ratio for X we weight either the predicted odds or the predicted probability by the distribution of C in the population. The weighted average of the predicted odds is not equal to the weighted average of the predicted probability converted to odds after averaging. The conditional odds ratio comes from the weighted average of the predicted odds while the marginal odds ratio comes from the weighted average of predicted probabilities converted to odds. 
+
+
+```{r Model7, eval=TRUE}
+
+
+
+Model7 <- glm(Y ~ X*C, data=df2, family=binomial)
+Table8 <- df2 %>% 
+  mutate(X=0) %>%
+  mutate(XPr0=predict(Model7, type="response", newdata = .)) %>%
+  mutate(XOdds0=predict(Model7, type="link", newdata = .)) %>%
+  mutate(X=1) %>%
+  mutate(XPr1=predict(Model7, type="response", newdata = .)) %>%
+  mutate(XOdds1=predict(Model7, type="link", newdata = .)) %>%
+  summarise(XPr0=mean(XPr0), XOdds0=mean(XOdds0), XOdds1=mean(XOdds1), 
+            XPr1=mean(XPr1)) %>%
+  mutate(Xodds_OR = exp(XOdds1-XOdds0)) %>%
+  mutate(XPr_OR = (XPr1 / (1-XPr1)) / (XPr0 / (1-XPr0))) %>%
+  select(XPr_OR, Xodds_OR)
+
+```
+
+
+
+
+
+
+
+### Discussion
+
+Figure 1 plots the conditional log odds ratio against the population (in terms of the confounder (C)) it represents. The working residual from the first stage model of an exposure as a function of confounding  is the equivalent of the inverse probability weight. The working residual is a transformation of the normal residual (X - X | C). In a linear outcome regression setting the normal residual from the first stage model gives the population the effect the outcome regression model represents. This result is only approximate for a logistic regression outcome model. In figure 1 the true population (marked as ?)  the outcome logistic regression represents is slightly different to that implied by the normal residual. At present I don't know what ? is and whether it is some form of transformation of the normal residual? I have experimented with transformation of the normal residual  from a probability  to odds scale but not had success. It may be that knowledge of the first stage model is not enough to derive this but it is sufficient for the working residual?
+
+```{r Figure1, eval=TRUE}
+Figure1 <- tibble(Cmean=c(Table2$C_R[4], Table4$Cmean_ORY_C[2], Table6$C_WR[4]), logOR=c(log(Table3$oddsY[3]), log(Table5$oddsY[3]),log(Table7$oddsY[3])), Residual=c("Normal", "?", "Working")) %>%
+  ggplot(aes(x=Cmean, y=logOR, label=Residual)) +
+  geom_point(size=3) +
+  geom_line() +
+  geom_label(nudge_x = 0.005) +
+  theme_few() +
+  ggtitle("Odds ratios for Y | X by different populations of C", "based on residuals from X | C" ) +
+  xlab("Mean of C") +
+  ylab("Conditional odds ratio (log scale)")
+Figure1
+```
+
+  
+
+
+
+
+```
+
+### References
+
+
